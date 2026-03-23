@@ -1,156 +1,101 @@
 import numpy as np
-from typing import List, Dict, Tuple
-from dataclasses import dataclass
-from enum import Enum
-
-class AgentRole(Enum):
-    EXPLORER = 'explorer'
-    WORKER = 'worker'
-    COORDINATOR = 'coordinator'
-
-@dataclass
-class Agent:
-    id: int
-    position: Tuple[float, float]
-    role: AgentRole
-    energy: float = 100.0
-    memory: Dict = None
-
-    def __post_init__(self):
-        if self.memory is None:
-            self.memory = {}
+from typing import List, Tuple, Optional
 
 class SwarmIntelligence:
-    def __init__(self, num_agents: int, world_size: Tuple[float, float]):
-        self.world_size = world_size
-        self.agents = self._initialize_agents(num_agents)
-        self.pheromone_map = np.zeros(world_size)
-        self.learning_rate = 0.1
+    def __init__(self, 
+                 swarm_size: int = 50,
+                 dimensions: int = 2,
+                 cognitive_weight: float = 2.0,
+                 social_weight: float = 2.0,
+                 inertia_weight: float = 0.7,
+                 memory_size: int = 10):
+        self.swarm_size = swarm_size
+        self.dimensions = dimensions
+        self.cognitive_weight = cognitive_weight
+        self.social_weight = social_weight
+        self.inertia_weight = inertia_weight
+        self.memory_size = memory_size
         
-    def _initialize_agents(self, num_agents: int) -> List[Agent]:
-        agents = []
-        roles = list(AgentRole)
-        for i in range(num_agents):
-            pos = (np.random.uniform(0, self.world_size[0]),
-                  np.random.uniform(0, self.world_size[1]))
-            role = roles[i % len(roles)]
-            agents.append(Agent(id=i, position=pos, role=role))
-        return agents
-
-    def update_roles(self) -> None:
-        """Dynamically update agent roles based on swarm needs"""
-        explorer_count = sum(1 for agent in self.agents if agent.role == AgentRole.EXPLORER)
-        worker_count = sum(1 for agent in self.agents if agent.role == AgentRole.WORKER)
+        # Initialize swarm positions and velocities
+        self.positions = np.random.uniform(-1, 1, (swarm_size, dimensions))
+        self.velocities = np.random.uniform(-0.1, 0.1, (swarm_size, dimensions))
         
-        for agent in self.agents:
-            # Adapt roles based on current situation
-            if agent.energy < 30 and agent.role == AgentRole.EXPLORER:
-                agent.role = AgentRole.WORKER
-            elif agent.energy > 80 and worker_count > len(self.agents) // 2:
-                agent.role = AgentRole.EXPLORER
-
-    def move_agents(self) -> None:
-        """Update agent positions using swarm behavior rules"""
-        for agent in self.agents:
-            # Get neighboring agents
-            neighbors = self._get_neighbors(agent)
+        # Personal best memory
+        self.pbest_positions = self.positions.copy()
+        self.pbest_fitness = np.full(swarm_size, float('inf'))
+        
+        # Global best memory
+        self.gbest_position = None
+        self.gbest_fitness = float('inf')
+        
+        # Historical fitness memory for adaptation
+        self.fitness_history = []
+        
+    def update_swarm(self, fitness_func) -> Tuple[np.ndarray, float]:
+        # Evaluate current positions
+        current_fitness = np.array([fitness_func(pos) for pos in self.positions])
+        
+        # Update personal bests
+        improved_particles = current_fitness < self.pbest_fitness
+        self.pbest_positions[improved_particles] = self.positions[improved_particles]
+        self.pbest_fitness[improved_particles] = current_fitness[improved_particles]
+        
+        # Update global best
+        min_fitness_idx = np.argmin(current_fitness)
+        if current_fitness[min_fitness_idx] < self.gbest_fitness:
+            self.gbest_fitness = current_fitness[min_fitness_idx]
+            self.gbest_position = self.positions[min_fitness_idx].copy()
+        
+        # Store fitness history for adaptation
+        self.fitness_history.append(np.mean(current_fitness))
+        if len(self.fitness_history) > self.memory_size:
+            self.fitness_history.pop(0)
+        
+        # Adapt parameters based on convergence
+        self._adapt_parameters()
+        
+        # Update velocities and positions
+        r1, r2 = np.random.random((2, self.swarm_size, self.dimensions))
+        cognitive_component = self.cognitive_weight * r1 * (self.pbest_positions - self.positions)
+        social_component = self.social_weight * r2 * (self.gbest_position - self.positions)
+        
+        self.velocities = (self.inertia_weight * self.velocities + 
+                          cognitive_component + 
+                          social_component)
+        
+        # Apply velocity clamping
+        self.velocities = np.clip(self.velocities, -1, 1)
+        
+        # Update positions
+        self.positions += self.velocities
+        
+        return self.gbest_position, self.gbest_fitness
+    
+    def _adapt_parameters(self):
+        if len(self.fitness_history) < 2:
+            return
             
-            if agent.role == AgentRole.EXPLORER:
-                self._explore(agent, neighbors)
-            elif agent.role == AgentRole.WORKER:
-                self._work(agent, neighbors)
-            elif agent.role == AgentRole.COORDINATOR:
-                self._coordinate(agent, neighbors)
-
-            # Update pheromone trails
-            self._update_pheromones(agent)
-
-    def _get_neighbors(self, agent: Agent, radius: float = 10.0) -> List[Agent]:
-        """Find neighboring agents within radius"""
-        return [
-            other for other in self.agents
-            if other.id != agent.id
-            and np.linalg.norm(np.array(agent.position) - np.array(other.position)) < radius
-        ]
-
-    def _explore(self, agent: Agent, neighbors: List[Agent]) -> None:
-        """Implement explorer behavior"""
-        # Add random movement with collision avoidance
-        movement = np.random.uniform(-1, 1, 2)
-        if neighbors:
-            separation = self._calculate_separation(agent, neighbors)
-            movement += separation
+        # Calculate improvement rate
+        improvement = (self.fitness_history[-2] - self.fitness_history[-1]) / self.fitness_history[-2]
         
-        new_pos = np.array(agent.position) + movement
-        agent.position = tuple(np.clip(new_pos, 0, self.world_size[0]))
-        agent.energy -= 0.5
-
-    def _work(self, agent: Agent, neighbors: List[Agent]) -> None:
-        """Implement worker behavior"""
-        # Follow pheromone trails and perform tasks
-        gradient = self._get_pheromone_gradient(agent.position)
-        movement = gradient * self.learning_rate
-        
-        if neighbors:
-            cohesion = self._calculate_cohesion(agent, neighbors)
-            movement += cohesion
-            
-        new_pos = np.array(agent.position) + movement
-        agent.position = tuple(np.clip(new_pos, 0, self.world_size[0]))
-        agent.energy -= 0.3
-
-    def _coordinate(self, agent: Agent, neighbors: List[Agent]) -> None:
-        """Implement coordinator behavior"""
-        # Maintain optimal position relative to other agents
-        if neighbors:
-            center = np.mean([n.position for n in neighbors], axis=0)
-            movement = (center - np.array(agent.position)) * 0.1
-            
-            new_pos = np.array(agent.position) + movement
-            agent.position = tuple(np.clip(new_pos, 0, self.world_size[0]))
-        agent.energy -= 0.1
-
-    def _calculate_separation(self, agent: Agent, neighbors: List[Agent]) -> np.ndarray:
-        """Calculate separation vector to avoid collisions"""
-        if not neighbors:
-            return np.zeros(2)
-        separation = np.zeros(2)
-        for neighbor in neighbors:
-            diff = np.array(agent.position) - np.array(neighbor.position)
-            distance = np.linalg.norm(diff)
-            if distance < 5.0:  # Minimum separation distance
-                separation += diff / (distance ** 2)
-        return separation
-
-    def _calculate_cohesion(self, agent: Agent, neighbors: List[Agent]) -> np.ndarray:
-        """Calculate cohesion vector to maintain swarm unity"""
-        if not neighbors:
-            return np.zeros(2)
-        center = np.mean([n.position for n in neighbors], axis=0)
-        return (center - np.array(agent.position)) * 0.1
-
-    def _update_pheromones(self, agent: Agent) -> None:
-        """Update pheromone trails based on agent activity"""
-        x, y = int(agent.position[0]), int(agent.position[1])
-        if 0 <= x < self.world_size[0] and 0 <= y < self.world_size[1]:
-            self.pheromone_map[x, y] += 1.0
-        # Pheromone evaporation
-        self.pheromone_map *= 0.95
-
-    def _get_pheromone_gradient(self, position: Tuple[float, float]) -> np.ndarray:
-        """Calculate pheromone gradient at given position"""
-        x, y = int(position[0]), int(position[1])
-        if 0 < x < self.world_size[0]-1 and 0 < y < self.world_size[1]-1:
-            dx = self.pheromone_map[x+1, y] - self.pheromone_map[x-1, y]
-            dy = self.pheromone_map[x, y+1] - self.pheromone_map[x, y-1]
-            return np.array([dx, dy])
-        return np.zeros(2)
-
-    def step(self) -> None:
-        """Perform one step of swarm simulation"""
-        self.update_roles()
-        self.move_agents()
-        # Replenish energy for agents near resources
-        for agent in self.agents:
-            if agent.energy < 100:
-                agent.energy = min(100, agent.energy + 0.1)
+        # Adapt weights based on improvement
+        if improvement < 0.001:  # Stagnation detected
+            self.inertia_weight = min(0.9, self.inertia_weight * 1.1)
+            self.cognitive_weight = min(2.5, self.cognitive_weight * 1.05)
+        else:
+            self.inertia_weight = max(0.4, self.inertia_weight * 0.95)
+            self.cognitive_weight = max(1.5, self.cognitive_weight * 0.95)
+    
+    def reset(self):
+        self.__init__(self.swarm_size, 
+                     self.dimensions,
+                     self.cognitive_weight,
+                     self.social_weight,
+                     self.inertia_weight,
+                     self.memory_size)
+    
+    @property
+    def best_solution(self) -> Optional[Tuple[np.ndarray, float]]:
+        if self.gbest_position is None:
+            return None
+        return self.gbest_position, self.gbest_fitness
