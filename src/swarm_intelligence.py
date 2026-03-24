@@ -1,32 +1,44 @@
 import numpy as np
+from typing import List, Tuple
 
-class SwarmCoordination:
-    def __init__(self, num_agents, num_tasks, task_locations, agent_locations):
-        self.num_agents = num_agents
-        self.num_tasks = num_tasks
-        self.task_locations = task_locations
-        self.agent_locations = agent_locations
-        self.task_assignments = [[] for _ in range(self.num_agents)]
+class SwarmAgent:
+    def __init__(self, id: int, position: np.ndarray, velocity: np.ndarray):
+        self.id = id
+        self.position = position
+        self.velocity = velocity
+        self.best_position = position.copy()
+        self.best_fitness = float('-inf')
 
-    def assign_tasks(self):
-        """Assign tasks to agents using a swarm coordination algorithm."""
-        # Calculate the distance between each agent and each task
-        distances = np.zeros((self.num_agents, self.num_tasks))
-        for i in range(self.num_agents):
-            for j in range(self.num_tasks):
-                distances[i, j] = np.linalg.norm(self.agent_locations[i] - self.task_locations[j])
+    def update_position(self, dt: float):
+        self.position += self.velocity * dt
 
-        # Assign tasks to agents using the Hungarian algorithm
-        row_ind, col_ind = linear_sum_assignment(distances)
+    def update_velocity(self, global_best_position: np.ndarray, inertia: float, cognitive_weight: float, social_weight: float):
+        r1 = np.random.rand(self.position.size)
+        r2 = np.random.rand(self.position.size)
+        self.velocity = inertia * self.velocity + \
+                        cognitive_weight * r1 * (self.best_position - self.position) + \
+                        social_weight * r2 * (global_best_position - self.position)
 
-        # Update the task assignments for each agent
-        for i, j in zip(row_ind, col_ind):
-            self.task_assignments[i].append(j)
+    def update_best_position(self, fitness: float):
+        if fitness > self.best_fitness:
+            self.best_position = self.position.copy()
+            self.best_fitness = fitness
 
-        return self.task_assignments
+class SwarmIntelligence:
+    def __init__(self, num_agents: int, dim: int, bounds: Tuple[np.ndarray, np.ndarray], inertia: float, cognitive_weight: float, social_weight: float):
+        self.agents = [SwarmAgent(i, np.random.uniform(*bounds, size=dim), np.random.uniform(-1, 1, size=dim)) for i in range(num_agents)]
+        self.inertia = inertia
+        self.cognitive_weight = cognitive_weight
+        self.social_weight = social_weight
 
-def linear_sum_assignment(cost_matrix):
-    """Solve the linear sum assignment problem using the Hungarian algorithm."""
-    # Implementation of the Hungarian algorithm
-    # ...
-    return row_ind, col_ind
+    def step(self, dt: float):
+        global_best_position = np.array([agent.best_position for agent in self.agents]).mean(axis=0)
+        for agent in self.agents:
+            agent.update_position(dt)
+            agent.update_velocity(global_best_position, self.inertia, self.cognitive_weight, self.social_weight)
+            fitness = self.evaluate_fitness(agent.position)
+            agent.update_best_position(fitness)
+
+    def evaluate_fitness(self, position: np.ndarray) -> float:
+        # Implement your fitness function here
+        return np.linalg.norm(position)
